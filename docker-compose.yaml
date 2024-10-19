@@ -1,0 +1,79 @@
+version: '3'
+services:
+  router:
+    image: alpine:latest
+    cap_add:
+      - NET_ADMIN
+    networks:
+      internal_network:
+        ipv4_address: 10.0.0.2
+      external_network:
+    sysctls:
+      - net.ipv4.ip_forward=1
+    command: >
+      sh -c "
+        apk add --no-cache iptables dnsmasq
+
+        iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination 10.0.0.3:80
+
+        iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination 10.0.0.3:443
+
+        iptables -A FORWARD -p tcp -d 10.0.0.3 --dport 80 -j ACCEPT
+        iptables -A FORWARD -p tcp -d 10.0.0.3 --dport 443 -j ACCEPT
+
+        iptables -t nat -A POSTROUTING -j MASQUERADE
+
+        echo 'server=8.8.8.8' >> /etc/dnsmasq.conf
+        echo 'server=8.8.4.4' >> /etc/dnsmasq.conf
+        dnsmasq --no-daemon --log-facility=- &
+
+        tail -f /dev/null
+      "
+
+  nginx:
+    image: nginx:latest
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      internal_network:
+        ipv4_address: 10.0.0.3
+      external_network:
+    depends_on:
+      - router
+    cap_add:
+      - NET_ADMIN
+    command: >
+      sh -c "
+        nginx -g 'daemon off;'
+      "
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    networks:
+      internal_network:
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - router
+      - nginx
+    dns:
+      - 10.0.0.2
+    command: >
+      sh -c "
+        ip route del default
+        ip route add default via 10.0.0.2
+        tail -f /dev/null
+      "
+
+networks:
+  internal_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.0.0.0/24
+    internal: true
+  external_network:
+    driver: bridge
